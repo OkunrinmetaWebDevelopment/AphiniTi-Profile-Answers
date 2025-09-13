@@ -793,6 +793,21 @@ files = [
 all = ["flake8 (>=7.1.1)", "mypy (>=1.11.2)", "pytest (>=8.3.2)", "ruff (>=0.6.2)"]
 
 [[package]]
+name = "mangum"
+version = "0.19.0"
+description = "AWS Lambda support for ASGI applications"
+optional = false
+python-versions = ">=3.7"
+groups = ["main"]
+files = [
+    {file = "mangum-0.19.0-py3-none-any.whl", hash = "sha256:e500b35f495d5e68ac98bc97334896d6101523f2ee2c57ba6a61893b65266e59"},
+    {file = "mangum-0.19.0.tar.gz", hash = "sha256:e388e7c491b7b67970f8234e46fd4a7b21ff87785848f418de08148f71cf0bd6"},
+]
+
+[package.dependencies]
+typing-extensions = "*"
+
+[[package]]
 name = "msgpack"
 version = "1.1.1"
 description = "MessagePack serializer"
@@ -1238,4 +1253,4 @@ standard = ["colorama (>=0.4) ; sys_platform == \"win32\"", "httptools (>=0.6.3)
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.13"
-content-hash = "ee0db7aa9628a25a693be22f14d672b6f682009d6787adba1e10968e546aa8b3"
+content-hash = "2ab42d58148cc1b7d5dbe9eae59aa1a2d5802d532bdaadca542b888a781e21de"

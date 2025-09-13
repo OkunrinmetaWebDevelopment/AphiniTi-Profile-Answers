@@ -27,13 +27,18 @@ def initialize_firebase():
                 print("Firebase initialized with environment credentials")
             else:
                 # Fallback to service account file (for local development)
+                # Use raw string or forward slashes to avoid unicode escape issues
                 service_account_path = os.getenv(
                     'FIREBASE_SERVICE_ACCOUNT_PATH', 
-                    'C:\Users\cokun\Downloads\firebase-service-account.json'
+                    'config/firebase-service-account.json'  # Relative path for local dev
                 )
-                cred = credentials.Certificate(service_account_path)
-                firebase_admin.initialize_app(cred)
-                print("Firebase initialized with service account file")
+                
+                if os.path.exists(service_account_path):
+                    cred = credentials.Certificate(service_account_path)
+                    firebase_admin.initialize_app(cred)
+                    print("Firebase initialized with service account file")
+                else:
+                    raise Exception("No Firebase credentials found. Please set FIREBASE_SERVICE_ACCOUNT environment variable or provide service account file.")
                 
         except Exception as e:
             print(f"Error initializing Firebase: {e}")
@@ -44,10 +49,6 @@ initialize_firebase()
 
 # Initialize Firestore client
 db = firestore.client()
-
-# Rest of your FastAPI code remains the same...
-# [Include all your existing endpoint code here]
-
 
 # Security scheme
 security = HTTPBearer()
@@ -228,134 +229,6 @@ async def get_ai_answers(user_id: str = Depends(verify_firebase_token)):
             detail="Failed to retrieve AI answers"
         )
 
-@app.delete("/api/ai-answers", response_model=AIAnswersResponse)
-async def delete_ai_answers(user_id: str = Depends(verify_firebase_token)):
-    """
-    Delete AI question answers for a user
-    """
-    try:
-        # Reference to user's AI answers document
-        doc_ref = db.collection("ai_answers").document(user_id)
-        
-        # Check if document exists
-        if not doc_ref.get().exists:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="No AI answers found for user"
-            )
-        
-        # Delete the document
-        doc_ref.delete()
-        
-        logger.info(f"Deleted AI answers for user {user_id}")
-        
-        return AIAnswersResponse(
-            success=True,
-            message="AI answers deleted successfully"
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error deleting AI answers for user {user_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to delete AI answers"
-        )
-
-@app.put("/api/ai-answers/{question_id}", response_model=AIAnswersResponse)
-async def update_single_answer(
-    question_id: int,
-    answer: str,
-    user_id: str = Depends(verify_firebase_token)
-):
-    """
-    Update a single AI question answer
-    """
-    try:
-        if not answer.strip():
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Answer cannot be empty"
-            )
-        
-        # Reference to user's AI answers document
-        doc_ref = db.collection("ai_answers").document(user_id)
-        
-        current_time = datetime.utcnow()
-        
-        # Update specific answer
-        doc_ref.update({
-            f"answers.{question_id}": answer.strip(),
-            "updated_at": current_time
-        })
-        
-        logger.info(f"Updated answer for question {question_id} for user {user_id}")
-        
-        return AIAnswersResponse(
-            success=True,
-            message=f"Answer for question {question_id} updated successfully",
-            updated_at=current_time
-        )
-        
-    except Exception as e:
-        logger.error(f"Error updating answer for user {user_id}, question {question_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to update answer"
-        )
-
-@app.get("/api/ai-answers/stats", response_model=Dict[str, Any])
-async def get_answer_stats(user_id: str = Depends(verify_firebase_token)):
-    """
-    Get statistics about user's AI answers
-    """
-    try:
-        # Reference to user's AI answers document
-        doc_ref = db.collection("ai_answers").document(user_id)
-        doc = doc_ref.get()
-        
-        if not doc.exists:
-            return {
-                "success": True,
-                "total_questions": 0,
-                "completed_questions": 0,
-                "completion_percentage": 0,
-                "last_updated": None
-            }
-        
-        doc_data = doc.to_dict()
-        answers = doc_data.get("answers", {})
-        
-        # Calculate stats
-        total_questions = len(answers)
-        completed_questions = sum(1 for answer in answers.values() if answer and answer.strip())
-        completion_percentage = (completed_questions / total_questions * 100) if total_questions > 0 else 0
-        
-        return {
-            "success": True,
-            "total_questions": total_questions,
-            "completed_questions": completed_questions,
-            "completion_percentage": round(completion_percentage, 2),
-            "last_updated": doc_data.get("updated_at"),
-            "created_at": doc_data.get("created_at")
-        }
-        
-    except Exception as e:
-        logger.error(f"Error getting answer stats for user {user_id}: {str(e)}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get answer statistics"
-        )
-
-# Health check endpoint
-@app.get("/health")
-async def health_check():
-    """
-    Health check endpoint
-    """
-    return {"status": "healthy", "timestamp": datetime.utcnow()}
-
 # Error handlers
 @app.exception_handler(HTTPException)
 async def http_exception_handler(request, exc):
@@ -364,8 +237,6 @@ async def http_exception_handler(request, exc):
         error_code=str(exc.status_code)
     )
 
-# For Vercel deployment
-handler = app
 
 if __name__ == "__main__":
     import uvicorn
