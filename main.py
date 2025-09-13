@@ -1,6 +1,10 @@
 from fastapi import FastAPI, HTTPException, Depends, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
+import base64
+import firebase_admin
+from firebase_admin import credentials, firestore
+import os, json
 from typing import Dict, Optional, Any
 import firebase_admin
 from firebase_admin import credentials, firestore, auth
@@ -12,38 +16,42 @@ import json
 # Initialize FastAPI app
 app = FastAPI(title="AI Questions API", version="1.0.0")
 
+
+
 def initialize_firebase():
     """Initialize Firebase with environment variables or service account file"""
     if not firebase_admin._apps:
         try:
-            # Try to get credentials from environment variable (for Vercel)
             firebase_credentials = os.getenv('FIREBASE_SERVICE_ACCOUNT')
-            print(firebase_credentials)
-            
-            if firebase_credentials:
-                # Parse JSON from environment variable
+            firebase_credentials_b64 = os.getenv('FIREBASE_SERVICE_ACCOUNT_BASE64')
+
+            cred_dict = None
+            if firebase_credentials:  # raw JSON string
                 cred_dict = json.loads(firebase_credentials)
+            elif firebase_credentials_b64:  # base64 encoded JSON
+                decoded = base64.b64decode(firebase_credentials_b64).decode("utf-8")
+                cred_dict = json.loads(decoded)
+
+            if cred_dict:
                 cred = credentials.Certificate(cred_dict)
                 firebase_admin.initialize_app(cred)
                 print("Firebase initialized with environment credentials")
             else:
-                # Fallback to service account file (for local development)
-                # Use raw string or forward slashes to avoid unicode escape issues
+                # fallback: local file
                 service_account_path = os.getenv(
-                    'FIREBASE_SERVICE_ACCOUNT_PATH', 
-                    'config/firebase-service-account.json'  # Relative path for local dev
+                    'FIREBASE_SERVICE_ACCOUNT_PATH',
+                    'config/firebase-service-account.json'
                 )
-                
                 if os.path.exists(service_account_path):
                     cred = credentials.Certificate(service_account_path)
                     firebase_admin.initialize_app(cred)
                     print("Firebase initialized with service account file")
                 else:
-                    raise Exception("No Firebase credentials found. Please set FIREBASE_SERVICE_ACCOUNT environment variable or provide service account file.")
-                
+                    raise Exception("No Firebase credentials found. Please set FIREBASE_SERVICE_ACCOUNT or FIREBASE_SERVICE_ACCOUNT_BASE64.")
         except Exception as e:
             print(f"Error initializing Firebase: {e}")
             raise e
+
 
 # Initialize Firebase
 initialize_firebase()
