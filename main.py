@@ -18,6 +18,7 @@ def initialize_firebase():
         try:
             # Try to get credentials from environment variable (for Vercel)
             firebase_credentials = os.getenv('FIREBASE_SERVICE_ACCOUNT')
+            print(firebase_credentials)
             
             if firebase_credentials:
                 # Parse JSON from environment variable
