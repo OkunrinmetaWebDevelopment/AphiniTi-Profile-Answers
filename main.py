@@ -3,20 +3,15 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from pydantic import BaseModel, Field
 import base64
 import firebase_admin
-from firebase_admin import credentials, firestore
-import os, json
-from typing import Dict, Optional, Any
-import firebase_admin
 from firebase_admin import credentials, firestore, auth
 from datetime import datetime
 import logging
 import os
 import json
+from typing import Dict, Optional, Any, List
 
 # Initialize FastAPI app
 app = FastAPI(title="AI Questions API", version="1.0.0")
-
-
 
 def initialize_firebase():
     """Initialize Firebase with environment variables or service account file"""
@@ -52,7 +47,6 @@ def initialize_firebase():
             print(f"Error initializing Firebase: {e}")
             raise e
 
-
 # Initialize Firebase
 initialize_firebase()
 
@@ -67,26 +61,62 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Pydantic models
-class AIAnswersRequest(BaseModel):
-    answers: Dict[int, str] = Field(..., description="Dictionary mapping question IDs to answers")
+class QuestionAnswerRequest(BaseModel):
+    question_id: int = Field(..., description="The ID of the question")
+    question_text: str = Field(..., description="The question text")
+    answer: str = Field(..., description="The user's answer")
+    user_id: str = Field(..., description="The user ID")
     
     class Config:
         json_schema_extra = {
             "example": {
-                "answers": {
-                    1: "I value honesty and communication",
-                    2: "Travel, hiking, reading",
-                    3: "Looking for a serious relationship"
-                }
+                "question_id": 1,
+                "question_text": "What do you value most in a relationship?",
+                "answer": "I value honesty and communication",
+                "user_id": "user123"
             }
         }
 
-class AIAnswersResponse(BaseModel):
+class BulkAnswersRequest(BaseModel):
+    answers: List[Dict[str, Any]] = Field(..., description="List of question-answer pairs")
+    user_id: str = Field(..., description="The user ID")
+    
+    class Config:
+        json_schema_extra = {
+            "example": {
+                "user_id": "user123",
+                "answers": [
+                    {
+                        "question_id": 1,
+                        "question_text": "What do you value most in a relationship?",
+                        "answer": "I value honesty and communication"
+                    },
+                    {
+                        "question_id": 2,
+                        "question_text": "What are your hobbies?",
+                        "answer": "Travel, hiking, reading"
+                    }
+                ]
+            }
+        }
+
+class UserAnswersResponse(BaseModel):
     success: bool
     message: str
-    answers: Optional[Dict[int, str]] = None
-    saved_at: Optional[datetime] = None
+    user_id: str
+    answers: Optional[List[Dict[str, Any]]] = None
+    total_answers: Optional[int] = None
+    created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+class QuestionAnswerResponse(BaseModel):
+    success: bool
+    message: str
+    question_id: int
+    question_text: str
+    answer: str
+    user_id: str
+    saved_at: datetime
 
 class ErrorResponse(BaseModel):
     success: bool = False
@@ -128,115 +158,305 @@ async def verify_firebase_token(credentials: HTTPAuthorizationCredentials = Depe
             detail="Authentication failed"
         )
 
-@app.post("/api/ai-answers", response_model=AIAnswersResponse)
-async def save_ai_answers(
-    request: AIAnswersRequest,
-    user_id: str = Depends(verify_firebase_token)
+@app.post("/api/question-answer", response_model=QuestionAnswerResponse)
+async def save_question_answer(
+    request: QuestionAnswerRequest,
+    authenticated_user_id: str = Depends(verify_firebase_token)
 ):
     """
-    Save AI question answers for a user
+    Save a single question-answer pair for a user
     """
     try:
-        # Validate answers
-        if not request.answers:
+        # Validate that the authenticated user matches the request user_id
+        if authenticated_user_id != request.user_id:
             raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Answers cannot be empty"
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot save answers for another user"
             )
         
-        # Convert question IDs to strings for Firestore (Firestore doesn't support integer keys)
-        answers_data = {str(k): v for k, v in request.answers.items()}
+        # Validate inputs
+        if not request.answer.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Answer cannot be empty"
+            )
+        
+        if not request.question_text.strip():
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Question text cannot be empty"
+            )
         
         # Prepare document data
         current_time = datetime.utcnow()
-        doc_data = {
-            "answers": answers_data,
-            "user_id": user_id,
+        answer_data = {
+            "question_id": request.question_id,
+            "question_text": request.question_text.strip(),
+            "answer": request.answer.strip(),
             "created_at": current_time,
-            "updated_at": current_time,
-            "total_questions": len(answers_data)
+            "updated_at": current_time
         }
         
-        # Reference to user's AI answers document
-        doc_ref = db.collection("ai_answers").document(user_id)
+        # Reference to user's answers collection
+        user_doc_ref = db.collection("ai_answers").document(request.user_id)
+        answer_doc_ref = user_doc_ref.collection("questions").document(str(request.question_id))
         
-        # Check if document already exists
-        existing_doc = doc_ref.get()
+        # Check if answer already exists
+        existing_answer = answer_doc_ref.get()
         
-        if existing_doc.exists:
-            # Update existing document
-            doc_data["created_at"] = existing_doc.to_dict().get("created_at", current_time)
-            doc_data["updated_at"] = current_time
-            doc_ref.set(doc_data, merge=True)
-            logger.info(f"Updated AI answers for user {user_id}")
+        if existing_answer.exists:
+            # Update existing answer
+            answer_data["created_at"] = existing_answer.to_dict().get("created_at", current_time)
+            answer_data["updated_at"] = current_time
+            answer_doc_ref.set(answer_data)
+            logger.info(f"Updated answer for question {request.question_id} for user {request.user_id}")
         else:
-            # Create new document
-            doc_ref.set(doc_data)
-            logger.info(f"Created new AI answers for user {user_id}")
+            # Create new answer
+            answer_doc_ref.set(answer_data)
+            logger.info(f"Created new answer for question {request.question_id} for user {request.user_id}")
         
-        return AIAnswersResponse(
+        # Update user summary document
+        await update_user_summary(request.user_id)
+        
+        return QuestionAnswerResponse(
             success=True,
-            message="AI answers saved successfully",
-            answers=request.answers,
-            saved_at=current_time,
+            message="Question answer saved successfully",
+            question_id=request.question_id,
+            question_text=request.question_text,
+            answer=request.answer,
+            user_id=request.user_id,
+            saved_at=current_time
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error saving question answer for user {request.user_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to save question answer"
+        )
+
+@app.post("/api/bulk-answers", response_model=UserAnswersResponse)
+async def save_bulk_answers(
+    request: BulkAnswersRequest,
+    authenticated_user_id: str = Depends(verify_firebase_token)
+):
+    """
+    Save multiple question-answer pairs for a user in a single request
+    """
+    try:
+        # Validate that the authenticated user matches the request user_id
+        if authenticated_user_id != request.user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot save answers for another user"
+            )
+        
+        if not request.answers:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Answers list cannot be empty"
+            )
+        
+        current_time = datetime.utcnow()
+        user_doc_ref = db.collection("ai_answers").document(request.user_id)
+        
+        # Use a batch write for better performance
+        batch = db.batch()
+        
+        for answer_item in request.answers:
+            # Validate each answer item
+            if not all(key in answer_item for key in ["question_id", "question_text", "answer"]):
+                raise HTTPException(
+                    status_code=status.HTTP_400_BAD_REQUEST,
+                    detail="Each answer must contain question_id, question_text, and answer"
+                )
+            
+            if not answer_item["answer"].strip():
+                continue  # Skip empty answers
+            
+            answer_data = {
+                "question_id": answer_item["question_id"],
+                "question_text": answer_item["question_text"].strip(),
+                "answer": answer_item["answer"].strip(),
+                "created_at": current_time,
+                "updated_at": current_time
+            }
+            
+            answer_doc_ref = user_doc_ref.collection("questions").document(str(answer_item["question_id"]))
+            
+            # Check if answer already exists
+            existing_answer = answer_doc_ref.get()
+            if existing_answer.exists:
+                answer_data["created_at"] = existing_answer.to_dict().get("created_at", current_time)
+            
+            batch.set(answer_doc_ref, answer_data)
+        
+        # Commit the batch
+        batch.commit()
+        
+        # Update user summary
+        await update_user_summary(request.user_id)
+        
+        logger.info(f"Saved {len(request.answers)} answers for user {request.user_id}")
+        
+        return UserAnswersResponse(
+            success=True,
+            message=f"Successfully saved {len(request.answers)} answers",
+            user_id=request.user_id,
+            total_answers=len(request.answers),
             updated_at=current_time
         )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error saving AI answers for user {user_id}: {str(e)}")
+        logger.error(f"Error saving bulk answers for user {request.user_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to save AI answers"
+            detail="Failed to save bulk answers"
         )
 
-@app.get("/api/ai-answers", response_model=AIAnswersResponse)
-async def get_ai_answers(user_id: str = Depends(verify_firebase_token)):
+@app.get("/api/user-answers/{user_id}", response_model=UserAnswersResponse)
+async def get_user_answers(
+    user_id: str,
+    authenticated_user_id: str = Depends(verify_firebase_token)
+):
     """
-    Retrieve AI question answers for a user
+    Retrieve all answers for a specific user
     """
     try:
-        # Reference to user's AI answers document
-        doc_ref = db.collection("ai_answers").document(user_id)
-        doc = doc_ref.get()
-        
-        if not doc.exists:
-            return AIAnswersResponse(
-                success=True,
-                message="No AI answers found for user",
-                answers={}
+        # Validate that the authenticated user matches the requested user_id
+        if authenticated_user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot access another user's answers"
             )
         
-        doc_data = doc.to_dict()
+        # Get all answers for the user
+        user_doc_ref = db.collection("ai_answers").document(user_id)
+        questions_ref = user_doc_ref.collection("questions")
         
-        # Convert string keys back to integers for consistency with frontend
-        answers = {}
-        if "answers" in doc_data:
-            for k, v in doc_data["answers"].items():
-                try:
-                    answers[int(k)] = v
-                except (ValueError, TypeError):
-                    # Skip invalid keys
-                    logger.warning(f"Invalid question ID key: {k}")
-                    continue
+        answers_docs = questions_ref.stream()
+        answers = []
         
-        logger.info(f"Retrieved AI answers for user {user_id}: {len(answers)} questions")
+        for doc in answers_docs:
+            answer_data = doc.to_dict()
+            answers.append({
+                "question_id": answer_data.get("question_id"),
+                "question_text": answer_data.get("question_text"),
+                "answer": answer_data.get("answer"),
+                "created_at": answer_data.get("created_at"),
+                "updated_at": answer_data.get("updated_at")
+            })
         
-        return AIAnswersResponse(
+        # Sort by question_id
+        answers.sort(key=lambda x: x["question_id"])
+        
+        logger.info(f"Retrieved {len(answers)} answers for user {user_id}")
+        
+        return UserAnswersResponse(
             success=True,
-            message="AI answers retrieved successfully",
+            message="User answers retrieved successfully",
+            user_id=user_id,
             answers=answers,
-            saved_at=doc_data.get("created_at"),
-            updated_at=doc_data.get("updated_at")
+            total_answers=len(answers)
         )
         
+    except HTTPException:
+        raise
     except Exception as e:
-        logger.error(f"Error retrieving AI answers for user {user_id}: {str(e)}")
+        logger.error(f"Error retrieving answers for user {user_id}: {str(e)}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to retrieve AI answers"
+            detail="Failed to retrieve user answers"
         )
+
+@app.get("/api/question-answer/{user_id}/{question_id}")
+async def get_specific_answer(
+    user_id: str,
+    question_id: int,
+    authenticated_user_id: str = Depends(verify_firebase_token)
+):
+    """
+    Get a specific question-answer pair for a user
+    """
+    try:
+        # Validate that the authenticated user matches the requested user_id
+        if authenticated_user_id != user_id:
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail="Cannot access another user's answers"
+            )
+        
+        # Get specific answer
+        user_doc_ref = db.collection("ai_answers").document(user_id)
+        answer_doc_ref = user_doc_ref.collection("questions").document(str(question_id))
+        
+        answer_doc = answer_doc_ref.get()
+        
+        if not answer_doc.exists:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"No answer found for question {question_id}"
+            )
+        
+        answer_data = answer_doc.to_dict()
+        
+        return {
+            "success": True,
+            "message": "Answer retrieved successfully",
+            "user_id": user_id,
+            "question_id": answer_data.get("question_id"),
+            "question_text": answer_data.get("question_text"),
+            "answer": answer_data.get("answer"),
+            "created_at": answer_data.get("created_at"),
+            "updated_at": answer_data.get("updated_at")
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving answer for user {user_id}, question {question_id}: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to retrieve answer"
+        )
+
+
+async def update_user_summary(user_id: str):
+    """
+    Update the user's summary document with answer statistics
+    """
+    try:
+        user_doc_ref = db.collection("ai_answers").document(user_id)
+        questions_ref = user_doc_ref.collection("questions")
+        
+        # Count total answers
+        answers_docs = list(questions_ref.stream())
+        total_answers = len(answers_docs)
+        
+        # Update summary document
+        summary_data = {
+            "user_id": user_id,
+            "total_answers": total_answers,
+            "last_updated": datetime.utcnow()
+        }
+        
+        user_doc_ref.set(summary_data, merge=True)
+        
+    except Exception as e:
+        logger.error(f"Error updating user summary for {user_id}: {str(e)}")
+
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    """
+    Health check endpoint
+    """
+    return {"status": "healthy", "timestamp": datetime.utcnow()}
 
 # Error handlers
 @app.exception_handler(HTTPException)
